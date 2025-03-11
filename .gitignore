@@ -1,0 +1,34 @@
+
+# Python/Django
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+*.env
+db.sqlite3
+staticfiles/
+*.log
+
+# Vite/React (frontend/client)
+node_modules/
+dist/
+*.log
+*.tsbuildinfo
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Miscellaneous
+*.bak
+*.swp
