@@ -12,7 +12,12 @@ function App() {
   const handleSubmit = async (tripData) => {
     setLoading(true);
     try {
-      const data = await calculateRoute(tripData);
+      const data = await calculateRoute({
+        current_location: tripData.currentLocation,
+        pickup_location: tripData.pickupLocation,
+        dropoff_location: tripData.dropoffLocation,
+        current_cycle_hours: parseFloat(tripData.currentCycleHours)
+      });
       setRouteData(data.route);
       setLogSheets(data.logSheets);
     } catch (error) {

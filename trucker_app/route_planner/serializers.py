@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Driver, Trip, Stop, LogSheet, LogActivity
+from .models import Trip, Stop, LogSheet, LogActivity
 
 class LogActivitySerializer(serializers.ModelSerializer):
     class Meta:

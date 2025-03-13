@@ -15,7 +15,7 @@ const Button = ({ children, onClick, type = "button", disabled = false, classNam
 };
 
 // Simple Input component
-const Input = ({ id, name, type = "text", placeholder, value, onChange, required = false }) => {
+const Input = ({ id, name, type = "text", placeholder, value ="string", onChange, required = false }) => {
   return (
     <input
       id={id}
@@ -61,7 +61,7 @@ export function TripForm({ onSubmit, isLoading }) {
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <form onSubmit={handleSubmit} action={'http://localhost:8000/calculate-route'} className="space-y-4">
       <div>
         <Label htmlFor="currentLocation">Current Location</Label>
         <Input

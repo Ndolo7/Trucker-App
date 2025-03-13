@@ -1,24 +1,19 @@
 // This file would normally make actual API calls to your Django backend
 // For now, we'll simulate the API responses
+import axios from 'axios';
 
-export async function calculateRoute(tripData) {
-    // In a real app, this would be a fetch to your Django backend
-    // return fetch('/api/calculate-route', {
-    //   method: 'POST',
-    //   headers: { 'Content-Type': 'application/json' },
-    //   body: JSON.stringify(tripData)
-    // }).then(res => res.json());
-  
-    // For demo purposes, we'll simulate a response
-    return new Promise((resolve) => {
-      setTimeout(() => {
-        resolve({
-          route: generateMockRouteData(tripData),
-          logSheets: generateMockLogSheets(tripData),
-        })
-      }, 1500) // Simulate network delay
-    })
+
+
+export const calculateRoute = async (tripData) => {
+  try {
+    const response = await axios.post('http://localhost:8000/calculate-route/', tripData);
+    console.log('API Response:', response.data); // Add this for debugging
+    return response.data;
+  } catch (error) {
+    console.error('Error calculating route:', error.response?.data || error);
+    throw error;
   }
+};
   
   function generateMockRouteData(tripData) {
     // Generate mock route data based on the input

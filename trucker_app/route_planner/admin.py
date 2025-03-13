@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Driver, Trip, Stop, LogSheet, LogActivity
+from .models import Trip, Stop, LogSheet, LogActivity
 
 class StopInline(admin.TabularInline):
     model = Stop
@@ -21,6 +21,6 @@ class TripAdmin(admin.ModelAdmin):
     inlines = [StopInline, LogSheetInline]
     list_display = ['id', 'pickup_location', 'dropoff_location', 'total_distance', 'created_at']
 
-admin.site.register(Driver)
+
 admin.site.register(Trip, TripAdmin)
 admin.site.register(LogSheet, LogSheetAdmin)

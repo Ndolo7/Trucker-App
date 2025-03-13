@@ -10,13 +10,37 @@ import datetime
 import requests
 import os
 from django.conf import settings
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Add this at the top of the file
-OPENROUTE_API_KEY = os.getenv('OPENROUTE_API_KEY', 'your_api_key_here')
+
+api_key = os.getenv('OPENROUTE_API_KEY1')
+
+def get_coordinates(location):
+    
+    """Get coordinates for a location using OpenRouteService geocoding API"""
+    base_url = f"https://api.openrouteservice.org/geocode/search?api_key={api_key}&text={location}"
+
+    params = {
+        'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
+    }
+    
+    response = requests.get(base_url, params=params)
+    data = response.json()
+    
+    if response.status_code != 200 or not data['features']:
+        raise Exception(f"Geocoding failed for location: {location}")
+    
+    coordinates = data['features'][0]['geometry']['coordinates']
+    return coordinates  # [lon, lat]
+
 
 def calculate_route_with_api(current_location, pickup_location, dropoff_location):
     """Calculate route using OpenRouteService API"""
-    base_url = "https://api.openrouteservice.org/v2/directions/driving-hgv"
+    base_url = "https://api.openrouteservice.org/v2/directions/driving-car"
     
     # Get coordinates for locations (you might want to implement a geocoding function)
     current_coords = get_coordinates(current_location)
@@ -24,13 +48,15 @@ def calculate_route_with_api(current_location, pickup_location, dropoff_location
     dropoff_coords = get_coordinates(dropoff_location)
     
     # Construct the API request
-    coordinates = f"{current_coords[1]},{current_coords[0]}|{pickup_coords[1]},{pickup_coords[0]}|{dropoff_coords[1]},{dropoff_coords[0]}"
+    body = {"coordinates":[[current_coords],[pickup_coords],[dropoff_coords]]}
+
     params = {
-        "api_key": OPENROUTE_API_KEY,
-        "coordinates": coordinates,
+        'Accept': 'application/json, application/geo+json, application/gpx+xml, img/png; charset=utf-8',
+        'Authorization': api_key,
+        'Content-Type': 'application/json; charset=utf-8'
     }
     
-    response = requests.get(base_url, params=params)
+    response = requests.post(base_url, json=body, params=params)
     data = response.json()
     
     if response.status_code != 200:
@@ -53,27 +79,20 @@ def calculate_route_with_api(current_location, pickup_location, dropoff_location
         'points': points
     }
 
-def get_coordinates(location):
-    """Get coordinates for a location using OpenRouteService geocoding API"""
-    base_url = "https://api.openrouteservice.org/geocode/search"
-    params = {
-        "api_key": OPENROUTE_API_KEY,
-        "text": location,
-    }
-    
-    response = requests.get(base_url, params=params)
-    data = response.json()
-    
-    if response.status_code != 200 or not data['features']:
-        raise Exception(f"Geocoding failed for location: {location}")
-    
-    coordinates = data['features'][0]['geometry']['coordinates']
-    return coordinates  # [lon, lat]
+
 
 # Create your views _______________________________________________________________.
 def home (request, *args, **kwargs):
     return render(request, 'index.html')
 #________________________________________________________________________________
+
+
+@api_view(['GET'])
+def get_trips (request):
+    trips = Trip.objects.all()
+    serializedData = TripSerializer(trips, many=True).data
+    return Response(serializedData)
+
 
 
 
@@ -84,58 +103,145 @@ def calculate_route(request):
     """
     serializer = TripInputSerializer(data=request.data)
     if serializer.is_valid():
-        # Extract validated data
-        current_location = serializer.validated_data['current_location']
-        pickup_location = serializer.validated_data['pickup_location']
-        dropoff_location = serializer.validated_data['dropoff_location']
-        current_cycle_hours = serializer.validated_data['current_cycle_hours']
-        
-        # Calculate route using external API (OpenRouteService, MapBox, etc.)
-        route_data = calculate_route_with_api(
-            current_location, 
-            pickup_location, 
-            dropoff_location
-        )
-        
-        # Process route data to determine stops and rest periods
-        processed_route = process_route_data(
-            route_data, 
-            current_cycle_hours
-        )
-        
-        # Generate ELD logs based on the route
-        log_sheets = generate_eld_logs(processed_route)
-        
-        # Return the processed data
-        return Response({
-            'route': processed_route,
-            'logSheets': log_sheets
-        })
+        try:
+            # Create and save the Trip
+            trip = Trip.objects.create(
+                current_location=serializer.validated_data['current_location'],
+                pickup_location=serializer.validated_data['pickup_location'],
+                dropoff_location=serializer.validated_data['dropoff_location'],
+                current_cycle_hours=serializer.validated_data['current_cycle_hours']
+            )
+            # Calculate route using external API
+            route_data = calculate_route_with_api(
+                trip.current_location, 
+                trip.pickup_location, 
+                trip.dropoff_location
+            )
+            
+            # Update trip with calculated data
+            trip.total_distance = route_data['total_distance']
+            trip.total_drive_time = route_data['total_drive_time']
+            trip.save()
+
+            # Process route data to determine stops and rest periods
+            processed_route = process_route_data(
+                route_data, 
+                trip.current_cycle_hours
+            )
+
+            # Save stops
+            for index, stop_data in enumerate(processed_route['stops']):
+                Stop.objects.create(
+                    trip=trip,
+                    location=stop_data['location'],
+                    stop_type=stop_data['type'].upper(),
+                    duration=stop_data['duration'],
+                    arrival_time=stop_data['arrivalTime'],
+                    sequence=index
+                )
+
+            # Generate and save ELD logs
+            log_sheets = generate_eld_logs(processed_route)
+            for log_data in log_sheets:
+                log_sheet = LogSheet.objects.create(
+                    trip=trip,
+                    date=log_data['date'],
+                    from_location=log_data['from'],
+                    to_location=log_data['to'],
+                    total_miles=int(float(log_data['totalMiles'])),
+                    carrier=log_data['carrier'],
+                    remarks=log_data['remarks'],
+                    shipping_documents=log_data['shippingDocuments']
+                )
+
+                # Save activities for this log sheet
+                for activity in log_data['activities']:
+                    LogActivity.objects.create(
+                        log_sheet=log_sheet,
+                        status=activity['status'],
+                        start_time=activity['startTime'],
+                        end_time=activity['endTime'],
+                        location=activity['location'],
+                        remarks=activity['remarks']
+                    )
+
+            # Return the processed data
+            return Response({
+                'route': processed_route,
+                'logSheets': log_sheets,
+                'tripId': trip.id
+            })
+
+        except Exception as e:
+            # If anything goes wrong, delete the trip and return error
+            if 'trip' in locals():
+                trip.delete()
+            return Response(
+                {'error': str(e)}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
     
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 def calculate_route_with_api(current_location, pickup_location, dropoff_location):
-    """
-    Calculate route using a mapping API
-    In a real implementation, this would call an external API like MapBox or OpenRouteService
-    """
-    # For demo purposes, we'll simulate the API response
-    
-    # Simulate distance calculation
-    # In a real app, we would use geocoding and routing APIs
-    total_distance = simulate_distance_calculation(current_location, pickup_location, dropoff_location)
-    
-    # Calculate drive time (average 55 mph)
-    total_drive_time = round(total_distance / 55, 1)
-    
-    # Generate route points
-    points = simulate_route_points(current_location, pickup_location, dropoff_location)
-    
-    return {
-        'total_distance': total_distance,
-        'total_drive_time': total_drive_time,
-        'points': points
-    }
+    """Calculate route using OpenRouteService API"""
+    try:
+        # Get coordinates for locations
+        current_coords = get_coordinates(current_location)
+        pickup_coords = get_coordinates(pickup_location)
+        dropoff_coords = get_coordinates(dropoff_location)
+
+        # Ensure we have valid coordinates
+        if not all([current_coords, pickup_coords, dropoff_coords]):
+            raise ValueError("Could not get valid coordinates for all locations")
+
+        # Generate route points (simplified for example)
+        points = [
+            {
+                'lat': current_coords[1],  # Note: OpenRouteService returns [lon, lat]
+                'lon': current_coords[0],
+                'name': current_location,
+                'type': 'start'
+            },
+            {
+                'lat': pickup_coords[1],
+                'lon': pickup_coords[0],
+                'name': pickup_location,
+                'type': 'pickup'
+            },
+            {
+                'lat': dropoff_coords[1],
+                'lon': dropoff_coords[0],
+                'name': dropoff_location,
+                'type': 'dropoff'
+            }
+        ]
+
+        # Calculate mock distance and time for now
+        total_distance = 473  # This should be calculated from actual coordinates
+        total_drive_time = 8.6  # This should be calculated from actual coordinates
+
+        return {
+            'total_distance': total_distance,
+            'total_drive_time': total_drive_time,
+            'points': points
+        }
+
+    except Exception as e:
+        print(f"Error calculating route: {str(e)}")
+        # Return fallback data with valid coordinates
+        return {
+            'total_distance': 0,
+            'total_drive_time': 0,
+            'points': [
+                {
+                    'lat': 39.8283,
+                    'lon': -98.5795,
+                    'name': 'Default Location',
+                    'type': 'start'
+                }
+            ]
+        }
 
 def simulate_distance_calculation(current_location, pickup_location, dropoff_location):
     """Simulate distance calculation between locations"""
