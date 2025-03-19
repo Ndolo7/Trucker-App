@@ -4,9 +4,10 @@ from rest_framework.response import Response
 from rest_framework import status, generics
 from .models import Trip, Stop, LogSheet, LogActivity
 from .serializers import TripSerializer, TripInputSerializer
-import requests
 import math
 import datetime
+import json
+from django.http import JsonResponse
 import requests
 import os
 from django.conf import settings
@@ -36,6 +37,46 @@ def get_coordinates(location):
     
     coordinates = data['features'][0]['geometry']['coordinates']
     return coordinates  # [lon, lat]
+
+def get_route_path(coordinates_list):
+    """Get the actual road path between coordinates using OpenRouteService"""
+    
+    # Format coordinates for the API request
+    formatted_coords = []
+    for coords in coordinates_list:
+        formatted_coords.append(coords)  # [lon, lat] format
+    
+    # Make the API request
+    url = "https://api.openrouteservice.org/v2/directions/driving-hgv"
+    headers = {
+        'Authorization': api_key,
+        'Content-Type': 'application/json'
+    }
+    
+    body = {
+        "coordinates": formatted_coords,
+        "format": "geojson"
+    }
+    
+    response = requests.post(url, json=body, headers=headers)
+    
+    if response.status_code != 200:
+        print(f"Error from OpenRouteService: {response.text}")
+        raise Exception(f"Failed to get route: {response.status_code}")
+    
+    data = response.json()
+    
+    # Extract the route geometry, distance, and duration
+    route = data['features'][0]
+    geometry = route['geometry']['coordinates']  # Array of [lon, lat] coordinates
+    distance = route['properties']['summary']['distance']
+    duration = route['properties']['summary']['duration']
+    
+    return {
+        'geometry': geometry,
+        'distance': distance,
+        'duration': duration
+    }
 
 
 def calculate_route_with_api(current_location, pickup_location, dropoff_location):
@@ -67,19 +108,78 @@ def calculate_route_with_api(current_location, pickup_location, dropoff_location
     total_distance = route['summary']['distance'] / 1609.34  # Convert meters to miles
     total_drive_time = route['summary']['duration'] / 3600  # Convert seconds to hours
     
-    # Extract route points
+    route_points = get_route_path([current_coords, pickup_coords, dropoff_coords])
+        
+    # Create points array with the start, pickup, and dropoff locations
     points = [
-        {'lon': coord[0], 'lat': coord[1]} 
-        for coord in route['geometry']['coordinates']
+        {
+            'lat': current_coords[1],  # Note: OpenRouteService returns [lon, lat]
+            'lon': current_coords[0],
+            'name': current_location,
+            'type': 'start'
+        },
+        {
+            'lat': pickup_coords[1],
+            'lon': pickup_coords[0],
+            'name': pickup_location,
+            'type': 'pickup'
+        },
+        {
+            'lat': dropoff_coords[1],
+            'lon': dropoff_coords[0],
+            'name': dropoff_location,
+            'type': 'dropoff'
+        }
     ]
-    
+
+
     return {
         'total_distance': round(total_distance, 2),
         'total_drive_time': round(total_drive_time, 2),
-        'points': points
+        'points': points,
+        'route_geometry': route_points['geometry']  # This contains the actual road path
     }
 
-
+def process_route_data(route_data, current_cycle_hours):
+    """
+    Process route data to determine stops and rest periods based on HOS regulations
+    """
+    total_distance = route_data['total_distance']
+    total_drive_time = route_data['total_drive_time']
+    
+    # Calculate required breaks (30 min break every 8 hours of driving)
+    required_breaks = math.floor(total_drive_time / 8)
+    
+    # Calculate required rest periods (10 hour rest after 11 hours of driving)
+    required_rest_periods = math.floor(total_drive_time / 11)
+    
+    # Calculate remaining hours in the 70-hour cycle
+    remaining_cycle_hours = 70 - current_cycle_hours
+    
+    # Check if additional rest periods are needed due to cycle limitations
+    additional_rest_periods = 0
+    if total_drive_time > remaining_cycle_hours:
+        additional_rest_periods = math.ceil((total_drive_time - remaining_cycle_hours) / 70 * 8)
+        required_rest_periods += additional_rest_periods
+    
+    # Generate stops with coordinates
+    stops = generate_stops(
+        route_data, 
+        required_breaks, 
+        required_rest_periods
+    )
+    
+    # Add the calculated data to the route
+    processed_route = {
+        'totalDistance': total_distance,
+        'totalDriveTime': total_drive_time,
+        'requiredBreaks': required_breaks,
+        'requiredRestPeriods': required_rest_periods,
+        'stops': stops,
+        'points': route_data['points']
+    }
+    
+    return processed_route
 
 # Create your views _______________________________________________________________.
 def home (request, *args, **kwargs):
@@ -243,197 +343,78 @@ def calculate_route_with_api(current_location, pickup_location, dropoff_location
             ]
         }
 
-def simulate_distance_calculation(current_location, pickup_location, dropoff_location):
-    """Simulate distance calculation between locations"""
-    # This is a simplified simulation - in a real app, use a geocoding/routing API
-    
-    # Check for some known routes for demo purposes
-    if 'Los Angeles' in current_location and 'San Francisco' in pickup_location:
-        return 380
-    elif 'New York' in current_location and 'Boston' in pickup_location:
-        return 215
-    elif 'Chicago' in current_location and 'Detroit' in pickup_location:
-        return 280
-    else:
-        # Generate a random but reasonable distance
-        import random
-        return random.randint(200, 1000)
 
-def simulate_route_points(current_location, pickup_location, dropoff_location):
-    """Simulate route points for mapping"""
-    # This is a simplified simulation - in a real app, use a routing API
-    
-    # Some hardcoded coordinates for demo purposes
-    location_coords = {
-        'Los Angeles': (34.0522, -118.2437),
-        'San Francisco': (37.7749, -122.4194),
-        'New York': (40.7128, -74.0060),
-        'Boston': (42.3601, -71.0589),
-        'Chicago': (41.8781, -87.6298),
-        'Detroit': (42.3314, -83.0458),
-        'Dallas': (32.7767, -96.7970),
-        'Houston': (29.7604, -95.3698),
-        'Miami': (25.7617, -80.1918),
-        'Seattle': (47.6062, -122.3321)
-    }
-    
-    # Get coordinates or generate random ones if not in our dictionary
-    def get_coords(location):
-        for city, coords in location_coords.items():
-            if city in location:
-                return coords
-        # Random coordinates in continental US if not found
-        import random
-        return (random.uniform(25, 49), random.uniform(-125, -70))
-    
-    current_coords = get_coords(current_location)
-    pickup_coords = get_coords(pickup_location)
-    dropoff_coords = get_coords(dropoff_location)
-    
-    # Create route points
-    points = [
-        {'lat': current_coords[0], 'lon': current_coords[1], 'name': current_location, 'type': 'start'},
-        {'lat': pickup_coords[0], 'lon': pickup_coords[1], 'name': pickup_location, 'type': 'pickup'}
-    ]
-    
-    # Add some intermediate points
-    # In a real app, these would come from the routing API
-    lat_diff = dropoff_coords[0] - pickup_coords[0]
-    lon_diff = dropoff_coords[1] - pickup_coords[1]
-    
-    # Add 1-3 intermediate points
-    import random
-    num_points = random.randint(1, 3)
-    
-    for i in range(num_points):
-        factor = (i + 1) / (num_points + 1)
-        points.append({
-            'lat': pickup_coords[0] + lat_diff * factor,
-            'lon': pickup_coords[1] + lon_diff * factor,
-            'name': f'Waypoint {i+1}',
-            'type': 'waypoint'
-        })
-    
-    # Add dropoff point
-    points.append({
-        'lat': dropoff_coords[0], 
-        'lon': dropoff_coords[1], 
-        'name': dropoff_location, 
-        'type': 'dropoff'
-    })
-    
-    return points
 
-def process_route_data(route_data, current_cycle_hours):
-    """
-    Process route data to determine stops and rest periods based on HOS regulations
-    """
-    total_distance = route_data['total_distance']
-    total_drive_time = route_data['total_drive_time']
-    
-    # Calculate required breaks (30 min break every 8 hours of driving)
-    required_breaks = math.floor(total_drive_time / 8)
-    
-    # Calculate required rest periods (10 hour rest after 11 hours of driving)
-    required_rest_periods = math.floor(total_drive_time / 11)
-    
-    # Calculate remaining hours in the 70-hour cycle
-    remaining_cycle_hours = 70 - current_cycle_hours
-    
-    # Check if additional rest periods are needed due to cycle limitations
-    additional_rest_periods = 0
-    if total_drive_time > remaining_cycle_hours:
-        additional_rest_periods = math.ceil((total_drive_time - remaining_cycle_hours) / 70 * 8)
-        required_rest_periods += additional_rest_periods
-    
-    # Generate stops
-    stops = generate_stops(
-        route_data, 
-        required_breaks, 
-        required_rest_periods
-    )
-    
-    # Add the calculated data to the route
-    processed_route = {
-        'totalDistance': total_distance,
-        'totalDriveTime': total_drive_time,
-        'requiredBreaks': required_breaks,
-        'requiredRestPeriods': required_rest_periods,
-        'stops': stops,
-        'points': route_data['points']
-    }
-    
-    return processed_route
 
 def generate_stops(route_data, required_breaks, required_rest_periods):
-    """Generate stops based on the route and HOS requirements"""
+    """Generate stops with coordinates based on the route and HOS requirements"""
     total_distance = route_data['total_distance']
     total_drive_time = route_data['total_drive_time']
+    points = route_data['points']
     
+    # Make sure we have at least start and end points
+    if len(points) < 2:
+        return []
+    
+    # Extract start, pickup, and dropoff coordinates
+    start_point = points[0]
+    end_point = points[-1]
+    
+    # Calculate intermediate points for breaks and rest periods
     stops = []
-    current_distance = 0
-    current_time = 0
     
     # Add pickup location as first stop
     stops.append({
-        'location': route_data['points'][1]['name'],  # Pickup point
+        'location': start_point['name'],
         'type': 'Pickup',
         'duration': 1,
-        'arrivalTime': format_time(8)  # Assume starting at 8 AM
+        'arrivalTime': format_time(8),  # Assume starting at 8 AM
+        'lat': start_point['lat'],
+        'lon': start_point['lon']
     })
     
-    # Add fuel stops (every ~500 miles)
-    fuel_stops = math.floor(total_distance / 500)
-    for i in range(fuel_stops):
-        distance = min(500, total_distance - current_distance)
-        current_distance += distance
-        current_time += distance / 55  # Assuming 55 mph average
-        
-        stops.append({
-            'location': f'Fuel Stop {i+1}',
-            'type': 'Fueling',
-            'duration': 0.5,
-            'arrivalTime': format_time(8 + current_time)
-        })
+    # Calculate total number of stops needed
+    total_stops = required_breaks + required_rest_periods
     
-    # Reset for calculating breaks and rest periods
-    current_distance = 0
-    current_time = 0
-    
-    # Add required breaks
-    for i in range(required_breaks):
-        current_time += 8  # 8 hours of driving
-        
-        stops.append({
-            'location': f'Rest Area {i+1}',
-            'type': 'Required Break',
-            'duration': 0.5,
-            'arrivalTime': format_time(8 + current_time)
-        })
-        
-        current_time += 0.5  # Add break time
-    
-    # Add required rest periods
-    for i in range(required_rest_periods):
-        current_time += 11  # 11 hours of driving
-        
-        stops.append({
-            'location': f'Rest Stop {i+1}',
-            'type': 'Required Rest Period',
-            'duration': 10,
-            'arrivalTime': format_time(8 + current_time)
-        })
-        
-        current_time += 10  # Add rest time
+    # If we need intermediate stops
+    if total_stops > 0:
+        # Calculate how to distribute stops along the route
+        for i in range(total_stops):
+            # Calculate position along the route (0 to 1)
+            position = (i + 1) / (total_stops + 1)
+            
+            # Interpolate coordinates between start and end
+            lat = start_point['lat'] + position * (end_point['lat'] - start_point['lat'])
+            lon = start_point['lon'] + position * (end_point['lon'] - start_point['lon'])
+            
+            # Determine stop type
+            if i < required_breaks:
+                stop_type = 'Required Break'
+                duration = 0.5
+            else:
+                stop_type = 'Required Rest Period'
+                duration = 10
+            
+            # Calculate arrival time
+            arrival_time = format_time(8 + position * total_drive_time)
+            
+            stops.append({
+                'location': f'Stop {i+1}',
+                'type': stop_type,
+                'duration': duration,
+                'arrivalTime': arrival_time,
+                'lat': lat,
+                'lon': lon
+            })
     
     # Add dropoff location as last stop
     stops.append({
-        'location': route_data['points'][-1]['name'],  # Dropoff point
+        'location': end_point['name'],
         'type': 'Dropoff',
         'duration': 1,
-        'arrivalTime': format_time(8 + total_drive_time + 
-                                  required_breaks * 0.5 + 
-                                  required_rest_periods * 10)
+        'arrivalTime': format_time(8 + total_drive_time),
+        'lat': end_point['lat'],
+        'lon': end_point['lon']
     })
     
     return stops
@@ -464,7 +445,7 @@ def generate_eld_logs(processed_route):
                        required_rest_periods * 10 + 
                        2)  # 2 hours for pickup and dropoff
     
-    total_trip_days = math.ceil(total_trip_hours / 24)
+    total_trip_days = max(1, math.ceil(total_trip_hours / 24))
     
     # Generate a log sheet for each day
     log_sheets = []
@@ -475,20 +456,145 @@ def generate_eld_logs(processed_route):
         
         if day == 0:
             # First day
-            activities = generate_first_day_activities(stops)
+            activities = [
+                {
+                    'status': 'onDuty',
+                    'startTime': '8',
+                    'endTime': '8.5',
+                    'location': stops[0]['location'],
+                    'remarks': 'Pre-trip inspection'
+                },
+                {
+                    'status': 'driving',
+                    'startTime': '8.5',
+                    'endTime': '10.5',
+                    'location': 'En route to pickup',
+                    'remarks': ''
+                },
+                {
+                    'status': 'onDuty',
+                    'startTime': '10.5',
+                    'endTime': '11.5',
+                    'location': stops[0]['location'],
+                    'remarks': 'Loading'
+                },
+                {
+                    'status': 'driving',
+                    'startTime': '11.5',
+                    'endTime': '14',
+                    'location': 'En route',
+                    'remarks': ''
+                },
+                {
+                    'status': 'offDuty',
+                    'startTime': '14',
+                    'endTime': '14.5',
+                    'location': 'Rest area',
+                    'remarks': '30-minute break'
+                },
+                {
+                    'status': 'driving',
+                    'startTime': '14.5',
+                    'endTime': '19.5',
+                    'location': 'En route',
+                    'remarks': ''
+                },
+                {
+                    'status': 'sleeperBerth',
+                    'startTime': '19.5',
+                    'endTime': '24',
+                    'location': 'Truck stop',
+                    'remarks': 'Rest period'
+                }
+            ]
         elif day == total_trip_days - 1:
             # Last day
-            activities = generate_last_day_activities(stops)
+            activities = [
+                {
+                    'status': 'sleeperBerth',
+                    'startTime': '0',
+                    'endTime': '5.5',
+                    'location': 'Truck stop',
+                    'remarks': 'Rest period continued'
+                },
+                {
+                    'status': 'driving',
+                    'startTime': '5.5',
+                    'endTime': '9.5',
+                    'location': 'En route to delivery',
+                    'remarks': ''
+                },
+                {
+                    'status': 'onDuty',
+                    'startTime': '9.5',
+                    'endTime': '10.5',
+                    'location': stops[-1]['location'],
+                    'remarks': 'Unloading'
+                },
+                {
+                    'status': 'onDuty',
+                    'startTime': '10.5',
+                    'endTime': '11',
+                    'location': stops[-1]['location'],
+                    'remarks': 'Post-trip inspection'
+                },
+                {
+                    'status': 'offDuty',
+                    'startTime': '11',
+                    'endTime': '24',
+                    'location': 'Off duty',
+                    'remarks': ''
+                }
+            ]
         else:
             # Middle days
-            activities = generate_middle_day_activities()
+            activities = [
+                {
+                    'status': 'sleeperBerth',
+                    'startTime': '0',
+                    'endTime': '5.5',
+                    'location': 'Truck stop',
+                    'remarks': 'Rest period continued'
+                },
+                {
+                    'status': 'driving',
+                    'startTime': '5.5',
+                    'endTime': '13.5',
+                    'location': 'En route',
+                    'remarks': ''
+                },
+                {
+                    'status': 'offDuty',
+                    'startTime': '13.5',
+                    'endTime': '14',
+                    'location': 'Rest area',
+                    'remarks': '30-minute break'
+                },
+                {
+                    'status': 'driving',
+                    'startTime': '14',
+                    'endTime': '19',
+                    'location': 'En route',
+                    'remarks': ''
+                },
+                {
+                    'status': 'sleeperBerth',
+                    'startTime': '19',
+                    'endTime': '24',
+                    'location': 'Truck stop',
+                    'remarks': 'Rest period'
+                }
+            ]
         
         # Create log sheet
+        from_location = stops[0]['location'] if day == 0 else 'En route'
+        to_location = stops[-1]['location'] if day == total_trip_days - 1 else 'En route'
+        
         log_sheet = {
             'date': f"Day {day + 1}",
-            'from': stops[0]['location'] if day == 0 else 'En route',
-            'to': stops[-1]['location'] if day == total_trip_days - 1 else 'En route',
-            'totalMiles': math.floor(processed_route['totalDistance'] / total_trip_days),
+            'from': from_location,
+            'to': to_location,
+            'totalMiles': str(int(processed_route['totalDistance'] / total_trip_days)),
             'carrier': 'ABC Trucking Co.',
             'activities': activities,
             'remarks': 'Trip started' if day == 0 else 'Trip completed' if day == total_trip_days - 1 else 'En route',
