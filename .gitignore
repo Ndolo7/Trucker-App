@@ -32,3 +32,7 @@ Thumbs.db
 # Miscellaneous
 *.bak
 *.swp
+
+/backend/static/admin/
+/backend/static/assets/
+/backend/static/rest_framework/
