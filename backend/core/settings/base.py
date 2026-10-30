@@ -21,13 +21,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY', default='django-insecure-_=@g&)c4!cehk^gxt^wo89&u3we=7pvd#q808#w0petl*rs@a&')
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='*', cast=lambda v: [s.strip() for s in v.split(',') if s.strip()])
 
 
 # Application definition
@@ -79,10 +77,12 @@ WSGI_APPLICATION = 'core.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
+DB_PATH = config('DATABASE_PATH', default=str(BASE_DIR / 'db.sqlite3'))
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'NAME': DB_PATH,
     }
 }
 
@@ -133,6 +133,9 @@ CORS_ALLOW_ALL_ORIGINS = True
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
 STATICFILES_DIRS = [
-   os.path.join(BASE_DIR.parent, 'frontend', 'public'),
-   os.path.join(BASE_DIR.parent, 'frontend', 'dist'), # Points to Vite's output assets
+    d for d in [
+        os.path.join(BASE_DIR.parent, 'frontend', 'public'),
+        os.path.join(BASE_DIR.parent, 'frontend', 'dist'),
+        str(BASE_DIR / 'static'),
+    ] if os.path.exists(d)
 ]
