@@ -1,8 +1,5 @@
 services:
   backend:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
     image: ghcr.io/ndolo7/trucker-backend:latest
     command: gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --threads 2 --access-logfile - --access-logformat '"%(r)s" %(s)s %(B)s' --error-logfile - --capture-output --log-level info
     restart: always
@@ -31,11 +28,12 @@ services:
         max-file: "5"
 
   frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
     image: ghcr.io/ndolo7/trucker-frontend:latest
+    command: npm run start -- -H 0.0.0.0 -p 3000
     restart: always
+    environment:
+      NODE_ENV: production
+      VITE_API_BASE_URL: http://backend:8000
     depends_on:
       backend:
         condition: service_started

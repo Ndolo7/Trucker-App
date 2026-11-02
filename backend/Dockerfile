@@ -17,10 +17,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . /app
 
-RUN mkdir -p /app/staticfiles /app/media /app/data \
-    && sed -i 's/\r$//' /app/entrypoint.sh \
-    && chmod +x /app/entrypoint.sh \
-    && cp /app/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 EXPOSE 8000
 
