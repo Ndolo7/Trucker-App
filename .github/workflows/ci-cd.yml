@@ -173,7 +173,7 @@ jobs:
           script: |
             set -e
             APP_DIR="/home/${{ secrets.VPS_USER }}/trucker"
-            MKDIR -P "$APP_DIR"
+            mkdir -P "$APP_DIR"
             cd "$APP_DIR"
 
             echo "DJANGO_ENV=$DJANGO_ENV" >> .env
